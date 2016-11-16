@@ -6,6 +6,8 @@ from helpers import tokenize
 import dataset
 from util import rand_variable, weight_var
 import random
+import show_html
+import sys
 
 vocab, embedding_matrix = embeddings()
 vocab_lookup = {word: i for i, word in enumerate(vocab)}
@@ -90,6 +92,9 @@ class Squad(Net):
         seq_reshaped = tf.reshape(sequence_labels, (-1, sequence_label_size))
         output_reshaped = create_dense(seq_reshaped, sequence_label_size, 1)
         output = tf.reshape(output_reshaped, (-1, passage_max_length))
+        output = tf.nn.softmax(output)
+        
+        desired_output = tf.nn.softmax(desired_output)
         
         # output = tf.Print(output, [output])
         loss = tf.reduce_mean(tf.reduce_sum(tf.pow(desired_output - output, 2), reduction_indices=[1]))
@@ -120,8 +125,9 @@ def iterate_batches(list, size=10):
         yield [list[i+j] for j in range(size)]
         i += size
 
+n = Squad(dir_path='save/squad1')
+
 def train():
-    n = Squad(dir_path='save/squad1')
     questions = list(questions_from_dataset(dataset.train()))
     random.shuffle(questions)
     test_questions = list(questions_from_dataset(dataset.test()))
@@ -131,9 +137,31 @@ def train():
     for i, batch in enumerate(iterate_batches(questions, size=20)):
         n.train(batch)
         if i % 10 == 0:
-            n.save()
+            n.save(i)
 
+def generate_heatmap(net, para, question):
+    vectors = [vectors_from_question(p, q) for p, q in [(para, question)]]
+    questions = np.array([q for ((p, q), mask) in vectors])
+    passages = np.array([p for ((p, q), mask) in vectors])
+    mask = net.session.run(net.output, {net.dropout: 1, net.question: questions, net.passage: passages})[0]
+    
+    top_n = sorted(range(len(mask)), key=lambda i: mask[i], reverse=True)[:10]
+    mask = [(1 if i in top_n else 0) for i in range(len(mask))]
+    
+    tokens = tokenize(para.passage)
+    heatmap = u" ".join([u"<span style='background-color: rgba(255,0,0,{0})'>{1}</span>".format(max(0, min(1, value)), word) for value, word in zip(mask, tokens)])
+    html = u"<h1>{0}</h1> <p>{1}</p>".format(question.question, heatmap)
+    return html
+
+def show_heatmap():
+    test_questions = list(questions_from_dataset(dataset.test()))
+    random.shuffle(test_questions)
+    para, question = test_questions[0]
+    show_html.show(generate_heatmap(n, para, question).encode('utf-8'))
 
 if __name__ == '__main__':
-    train()
+    if 'show' in sys.argv:
+        show_heatmap()
+    else:
+        train()
         
