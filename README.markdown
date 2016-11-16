@@ -10,6 +10,13 @@ Look [here](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/g3do
 
 - unzip the glove (word embeddings) file in data/ (it's gitignored b/c it's big)
 
+- generate the .npy file that contains the embedding matrix (this is faster than loading it every time, but the file is too big for github)
+
+```
+mkdir cache
+python embedding.py
+```
+
 # Every time you develop
 
 ```
