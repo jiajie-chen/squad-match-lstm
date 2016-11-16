@@ -22,3 +22,10 @@ python embedding.py
 ```
 source venv/bin/activate
 ```
+
+# Open questions
+
+How do we deal with the fact that many of the phrases/entities in the documents (e.g. "Denver Broncos") might not have meaningful embeddings?
+
+- idea: in addition to word embeddings, augment the vector representation of each word in the passage with a sparse vector N-long (where N is the length of the question), where there's a 1 if that word appears at the corresponding index in the question
+
