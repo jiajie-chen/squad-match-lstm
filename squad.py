@@ -16,9 +16,7 @@ vocab_size, embedding_size = embedding_matrix.shape
 passage_max_length = 200
 question_max_length = 20
 
-hp_size = 50
-hq_size = 50
-hr_size = 100
+hidden_size = 50
 
 def vectorize(text, fixed_length=None):
     vocab_size = len(vocab_lookup)
@@ -79,22 +77,45 @@ class Squad(Net):
         dropout = tf.placeholder(tf.float32)
 
         with tf.variable_scope('passage_lstm'):
-            passage_cell = tf.nn.rnn_cell.LSTMCell(hp_size)
+            passage_cell = tf.nn.rnn_cell.LSTMCell(hidden_size)
             passage_cell = tf.nn.rnn_cell.DropoutWrapper(passage_cell, output_keep_prob=dropout)
             passage_cell = tf.nn.rnn_cell.MultiRNNCell([passage_cell] * 2)
-            hidden_p, _ = tf.nn.dynamic_rnn(passage_cell, passage_embedded, dtype=tf.float32)  # shape (batch_size, passage_max_length, hp_size)
+            H_p, _ = tf.nn.dynamic_rnn(passage_cell, passage_embedded, dtype=tf.float32)  # shape (batch_size, passage_max_length, hidden_size)
         
         with tf.variable_scope('question_lstm'):
-            question_cell = tf.nn.rnn_cell.LSTMCell(hq_size)
+            question_cell = tf.nn.rnn_cell.LSTMCell(hidden_size)
             question_cell = tf.nn.rnn_cell.DropoutWrapper(question_cell, output_keep_prob=dropout)
             question_cell = tf.nn.rnn_cell.MultiRNNCell([question_cell] * 2)
-            hidden_q, _ = tf.nn.dynamic_rnn(question_cell, question_embedded, dtype=tf.float32)  # shape (batch_size, question_max_length, hq_size)
+            H_q, _ = tf.nn.dynamic_rnn(question_cell, question_embedded, dtype=tf.float32)  # shape (batch_size, question_max_length, hidden_size)
 
         ####################
         # Match-LSTM layer #
         ####################
 
-        # TODO: this layer
+        # TODO: Create weight and bias tensors (W_q, W_p, W_r, w_a, b_p, b_a)
+        #       These weights and biases are shared between the two LSTMs below
+
+        # TODO: Iterate over each token (i) in the passage. Or maybe this could be matrix math?
+
+        with tf.variable_scope('forward_match_lstm'):
+            fwd_G[i] = tf.tanh((W_q * H_q) + (W_p * H_p[i]) + (W_r * fwd_H_r[i-1]) + b_p) # TODO: include outer product
+            fwd_a[i] = tf.nn.softmax(w_a * G[i] + b_a) # TODO: include outer product
+            fwd_z[i] = tf.concatenate(H_p[i], H_q * a[i])
+
+            fwd_match_cell = tf.nn.rnn_cell.LSTMCell(hidden_size)
+            fwd_match_cell = tf.nn.rnn_cell.DropoutWrapper(fwd_match_cell, output_keep_prob=dropout)
+            fwd_H_r[i], _ = tf.nn.dynamic_rnn(fwd_match_cell, fwd_z[i], initial_state=fwd_H_r[i-1], dtype=tf.float32)
+
+        with tf.variable_scope('reverse_match_lstm'):
+            rev_G[i] = tf.tanh((W_q * H_q) + (W_p * H_p[i]) + (W_r * rev_H_r[i+1]) + b_p) # TODO: include outer product
+            rev_a[i] = tf.nn.softmax(w_a * G[i] + b_a) # TODO: include outer product
+            rev_z[i] = tf.concatenate(H_p[i], H_q * a[i])
+
+            rev_match_cell = tf.nn.rnn_cell.LSTMCell(hidden_size)
+            rev_match_cell = tf.nn.rnn_cell.DropoutWrapper(rev_match_cell, output_keep_prob=dropout)
+            rev_H_r[i], _ = tf.nn.dynamic_rnn(rev_match_cell, rev_z[i], initial_state=rev_H_r[i-1], dtype=tf.float32)
+
+        # TODO: After finding forward and reverse H_r[i] for all i, concatenate fwd_H_r and rev_H_r
 
         ########################
         # Answer-Pointer layer #
