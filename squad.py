@@ -16,6 +16,10 @@ vocab_size, embedding_size = embedding_matrix.shape
 passage_max_length = 200
 question_max_length = 20
 
+hp_size = 50
+hq_size = 50
+hr_size = 100
+
 def vectorize(text, fixed_length=None):
     vocab_size = len(vocab_lookup)
     tokens = tokenize(text)
@@ -52,49 +56,53 @@ def questions_from_dataset(ds):
 
 class Squad(Net):
     def setup(self):
-        passage = tf.placeholder(tf.int32, [None, passage_max_length], name='passage')
-        question = tf.placeholder(tf.int32, [None, question_max_length], name='question')
-        desired_output = tf.placeholder(tf.float32, [None, passage_max_length], name='desired_output')
-        
-        embedding = tf.constant(embedding_matrix, name='embedding', dtype=tf.float32)
-        question_embedded = tf.nn.embedding_lookup(embedding, question)
-        passage_embedded = tf.nn.embedding_lookup(embedding, passage)
         
         def create_dense(input, input_size, output_size, relu=True):
             weights = weight_var([input_size, output_size])
             biases = weight_var([output_size])
             r = tf.matmul(input, weights) + biases
             return tf.nn.relu(r) if relu else r
+
+        passage = tf.placeholder(tf.int32, [None, passage_max_length], name='passage')  # shape (batch_size, passage_max_length)
+        question = tf.placeholder(tf.int32, [None, question_max_length], name='question')  # shape (batch_size, question_max_length)
+        desired_output = tf.placeholder(tf.float32, [None, passage_max_length], name='desired_output')  # shape (batch_size, passage_max_length)
         
+        embedding = tf.constant(embedding_matrix, name='embedding', dtype=tf.float32)
+
+        #######################
+        # Preprocessing layer #
+        ####################### 
+
+        passage_embedded = tf.nn.embedding_lookup(embedding, passage)  # shape (batch_size, passage_max_length, embedding_size)
+        question_embedded = tf.nn.embedding_lookup(embedding, question)  # shape (batch_size, question_max_length, embedding_size)
+
         dropout = tf.placeholder(tf.float32)
-        
-        with tf.variable_scope('question_lstm'):
-            question_cell = tf.nn.rnn_cell.LSTMCell(embedding_size)
-            question_cell = tf.nn.rnn_cell.DropoutWrapper(question_cell, output_keep_prob=dropout)
-            question_cell = tf.nn.rnn_cell.MultiRNNCell([question_cell] * 2)
-            question_vecs, _ = tf.nn.dynamic_rnn(question_cell, question_embedded, dtype=tf.float32)
-        
-        question_vecs = tf.transpose(question_vecs, [1, 0, 2])
-        question_vec = tf.gather(question_vecs, int(question_vecs.get_shape()[0]) - 1) # shape is (batch_size, embedding_size)
-        question_vec = tf.reshape(question_vec, (-1, 1, embedding_size))
-        
-        # for each token vector in the passage, concatenate the question vec onto the end
-        question_vec = tf.tile(question_vec, [1, passage_max_length, 1])
-        passage_with_question = tf.concat(2, [passage_embedded, question_vec])
-        
+
         with tf.variable_scope('passage_lstm'):
-            passage_cell = tf.nn.rnn_cell.LSTMCell(embedding_size * 2)
+            passage_cell = tf.nn.rnn_cell.LSTMCell(hp_size)
             passage_cell = tf.nn.rnn_cell.DropoutWrapper(passage_cell, output_keep_prob=dropout)
             passage_cell = tf.nn.rnn_cell.MultiRNNCell([passage_cell] * 2)
-            sequence_labels, _ = tf.nn.dynamic_rnn(passage_cell, passage_with_question, dtype=tf.float32)
+            hidden_p, _ = tf.nn.dynamic_rnn(passage_cell, passage_embedded, dtype=tf.float32)  # shape (batch_size, passage_max_length, hp_size)
         
-        sequence_label_size = embedding_size * 2
-        seq_reshaped = tf.reshape(sequence_labels, (-1, sequence_label_size))
-        output_reshaped = create_dense(seq_reshaped, sequence_label_size, 1)
-        output = tf.reshape(output_reshaped, (-1, passage_max_length))
-        output = tf.nn.softmax(output)
-        
-        desired_output = tf.nn.softmax(desired_output)
+        with tf.variable_scope('question_lstm'):
+            question_cell = tf.nn.rnn_cell.LSTMCell(hq_size)
+            question_cell = tf.nn.rnn_cell.DropoutWrapper(question_cell, output_keep_prob=dropout)
+            question_cell = tf.nn.rnn_cell.MultiRNNCell([question_cell] * 2)
+            hidden_q, _ = tf.nn.dynamic_rnn(question_cell, question_embedded, dtype=tf.float32)  # shape (batch_size, question_max_length, hq_size)
+
+        ####################
+        # Match-LSTM layer #
+        ####################
+
+        # TODO: this layer
+
+        ########################
+        # Answer-Pointer layer #
+        ########################
+
+        # TODO: this layer
+
+
         
         # output = tf.Print(output, [output])
         loss = tf.reduce_mean(tf.reduce_sum(tf.pow(desired_output - output, 2), reduction_indices=[1]))
