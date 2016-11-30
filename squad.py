@@ -92,28 +92,52 @@ class Squad(Net):
         # Match-LSTM layer #
         ####################
 
-        # TODO: Create weight and bias tensors (W_q, W_p, W_r, w_a, b_p, b_a)
-        #       These weights and biases are shared between the two LSTMs below
-
         # TODO: Iterate over each token (i) in the passage. Or maybe this could be matrix math?
+        W_r = self.weight_variable(shape=[hidden_size, hidden_size])
+        b_p = self.bias_variable( shape=[hidden_size])
+        W_t = self.weight_variable(shape=[hidden_size])
+        b_a = tf.placeholder(tf.int32) #self.bias_variable(shape=[len(H_q)])
 
+        W_q = self.weight_variable(shape=[hidden_size, hidden_size])
+        W_p = self.weight_variable(shape=[hidden_size, hidden_size])
+
+        # Calculate WH_q once
+        print W_q.get_shape()
+        print H_q.get_shape()
+        WH_q = tf.matmul(W_q, H_q)
+
+        # Results for fwd and bg lstms
+        fwd_H_r = []
+        rev_H_r = []
         with tf.variable_scope('forward_match_lstm'):
-            fwd_G[i] = tf.tanh((W_q * H_q) + (W_p * H_p[i]) + (W_r * fwd_H_r[i-1]) + b_p) # TODO: include outer product
-            fwd_a[i] = tf.nn.softmax(w_a * G[i] + b_a) # TODO: include outer product
-            fwd_z[i] = tf.concatenate(H_p[i], H_q * a[i])
-
             fwd_match_cell = tf.nn.rnn_cell.LSTMCell(hidden_size)
-            fwd_match_cell = tf.nn.rnn_cell.DropoutWrapper(fwd_match_cell, output_keep_prob=dropout)
-            fwd_H_r[i], _ = tf.nn.dynamic_rnn(fwd_match_cell, fwd_z[i], initial_state=fwd_H_r[i-1], dtype=tf.float32)
+            #fwd_match_cell = tf.nn.rnn_cell.DropoutWrapper(fwd_match_cell, output_keep_prob=dropout)
+            state = cell.zero_state(batch_size, H_q.dtype)
+            h = state.h
+            for i in range(len(H_p)):
+                outer_product = tf.tile((tf.matmul(W_p, H_p[i]) + tf.matmul(W_r, h) + b_p), [question_max_length, 1])
+                fwd_G = tf.tanh(WH_q + outer_product)
+                bias_outside_product = tf.tile(b_a, [question_max_length, 1])
+                fwd_a = tf.nn.softmax(W_t * fwd_G + bias_variable) # Resulting attention weight vector
+
+                fwd_z = tf.concatenate(h_pi, H_q * fwd_a[i])
+                h, state = fwd_match_cell(fwd_z, state)
+                fwd_H_r.append(h);
 
         with tf.variable_scope('reverse_match_lstm'):
-            rev_G[i] = tf.tanh((W_q * H_q) + (W_p * H_p[i]) + (W_r * rev_H_r[i+1]) + b_p) # TODO: include outer product
-            rev_a[i] = tf.nn.softmax(w_a * G[i] + b_a) # TODO: include outer product
-            rev_z[i] = tf.concatenate(H_p[i], H_q * a[i])
-
             rev_match_cell = tf.nn.rnn_cell.LSTMCell(hidden_size)
-            rev_match_cell = tf.nn.rnn_cell.DropoutWrapper(rev_match_cell, output_keep_prob=dropout)
-            rev_H_r[i], _ = tf.nn.dynamic_rnn(rev_match_cell, rev_z[i], initial_state=rev_H_r[i-1], dtype=tf.float32)
+            #fwd_match_cell = tf.nn.rnn_cell.DropoutWrapper(fwd_match_cell, output_keep_prob=dropout)
+            state = cell.zero_state(batch_size, H_q.dtype)
+            h = state.h
+            for i in reversed(range(len(H_p))):
+                outer_product = tf.tile((tf.matmul(W_p, H_p[i]) + tf.matmul(W_r, h) + b_p), [question_max_length, 1])
+                rev_G = tf.tanh(WH_q + outer_product)
+                bias_outside_product = tf.tile(b_a, [question_max_length, 1])
+                rev_a = tf.nn.softmax(W_t * rev_G + bias_variable) # Resulting attention weight vector
+
+                rev_z = tf.concatenate(h_pi, H_q * rev_a[i])
+                h, state = fwd_match_cell(rev_z, state)
+                rev_H_r.append(h);
 
         # TODO: After finding forward and reverse H_r[i] for all i, concatenate fwd_H_r and rev_H_r
 
@@ -147,6 +171,16 @@ class Squad(Net):
         feed = {self.passage: passages, self.question: questions, self.desired_output: masks, self.dropout: 0.5}
         _, loss = self.session.run([self.train_step, self.loss], feed_dict=feed)
         print loss
+
+    @staticmethod
+    def weight_variable(shape, name=None):
+        initial = tf.truncated_normal(shape, stddev=0.1)
+        return tf.Variable(initial, name=name)
+
+    @staticmethod
+    def bias_variable(shape, name=None):
+        initial = tf.constant(0.1, shape=shape)
+        return tf.Variable(initial, name=name)
 
 def iterate_batches(list, size=10):
     i = 0
