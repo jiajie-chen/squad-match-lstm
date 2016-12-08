@@ -92,61 +92,60 @@ class Squad(Net):
         # Match-LSTM layer #
         ####################
 
-        # TODO: Iterate over each token (i) in the passage. Or maybe this could be matrix math?
-        W_r = self.weight_variable(shape=[hidden_size, hidden_size])
-        b_p = self.bias_variable( shape=[hidden_size])
-        W_t = self.weight_variable(shape=[hidden_size])
-        b_a = tf.placeholder(tf.int32) #self.bias_variable(shape=[len(H_q)])
 
+        # Weights and bias to compute `G`
         W_q = self.weight_variable(shape=[hidden_size, hidden_size])
         W_p = self.weight_variable(shape=[hidden_size, hidden_size])
+        W_r = self.weight_variable(shape=[hidden_size, hidden_size])
+        b_p = self.bias_variable( shape=[hidden_size])
 
-        # Calculate WH_q once
-        print W_q.get_shape()
-        print H_q.get_shape()
+        # Weight and bias to compute `a`
+        w_t = self.weight_variable(shape=[hidden_size])
+        b_a = self.bias_variable(shape=[])
+
+        # Only calculate `WH_q` once
         WH_q = tf.matmul(W_q, H_q)
 
-        # Results for fwd and bg lstms
-        fwd_H_r = []
-        rev_H_r = []
+        # Results for forward and backward LSTMs
+        H_r_forward = []
+        H_r_backward = []
+
         with tf.variable_scope('forward_match_lstm'):
-            fwd_match_cell = tf.nn.rnn_cell.LSTMCell(hidden_size)
-            #fwd_match_cell = tf.nn.rnn_cell.DropoutWrapper(fwd_match_cell, output_keep_prob=dropout)
-            state = cell.zero_state(batch_size, H_q.dtype)
-            h = state.h
+            forward_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size), output_keep_prob=dropout)
+            forward_state = forward_cell.zero_state(batch_size, H_q.dtype)
+            h = forward_state.h
             for i in range(len(H_p)):
                 outer_product = tf.tile((tf.matmul(W_p, H_p[i]) + tf.matmul(W_r, h) + b_p), [question_max_length, 1])
-                fwd_G = tf.tanh(WH_q + outer_product)
+                G_forward = tf.tanh(WH_q + outer_product)
                 bias_outside_product = tf.tile(b_a, [question_max_length, 1])
-                fwd_a = tf.nn.softmax(W_t * fwd_G + bias_variable) # Resulting attention weight vector
+                a_forward = tf.nn.softmax(w_t * G_forward + bias_variable) # Resulting attention weight vector
 
-                fwd_z = tf.concatenate(h_pi, H_q * fwd_a[i])
-                h, state = fwd_match_cell(fwd_z, state)
-                fwd_H_r.append(h);
+                z_forward = tf.concatenate(h_pi, H_q * a_forward[i])
+                h, forward_state = forward_cell(z_forward, forward_state)
+                H_r_forward.append(h);
 
-        with tf.variable_scope('reverse_match_lstm'):
-            rev_match_cell = tf.nn.rnn_cell.LSTMCell(hidden_size)
-            #fwd_match_cell = tf.nn.rnn_cell.DropoutWrapper(fwd_match_cell, output_keep_prob=dropout)
-            state = cell.zero_state(batch_size, H_q.dtype)
-            h = state.h
+        with tf.variable_scope('backward_match_lstm'):
+            backward_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size), output_keep_prob=dropout)
+            backward_state = backward_cell.zero_state(batch_size, H_q.dtype)
+            h = backward_state.h
             for i in reversed(range(len(H_p))):
                 outer_product = tf.tile((tf.matmul(W_p, H_p[i]) + tf.matmul(W_r, h) + b_p), [question_max_length, 1])
-                rev_G = tf.tanh(WH_q + outer_product)
+                G_backward = tf.tanh(WH_q + outer_product)
                 bias_outside_product = tf.tile(b_a, [question_max_length, 1])
-                rev_a = tf.nn.softmax(W_t * rev_G + bias_variable) # Resulting attention weight vector
+                a_backward = tf.nn.softmax(w_t * G_backward + bias_variable) # Resulting attention weight vector
 
-                rev_z = tf.concatenate(h_pi, H_q * rev_a[i])
-                h, state = fwd_match_cell(rev_z, state)
-                rev_H_r.append(h);
+                z_backward = tf.concatenate(h_pi, H_q * a_backward[i])
+                h, backward_state = backward_cell(z_backward, backward_state)
+                H_r_backward.append(h);
 
-        # TODO: After finding forward and reverse H_r[i] for all i, concatenate fwd_H_r and rev_H_r
+        # After finding forward and backward `H_r[i]` for all `i`, concatenate `H_r_forward` and `H_r_backward`
+        H_r = tf.concatenate(H_r_forward, H_r_backward)
 
         ########################
         # Answer-Pointer layer #
         ########################
 
         # TODO: this layer
-
 
         
         # output = tf.Print(output, [output])
