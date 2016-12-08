@@ -54,13 +54,6 @@ def questions_from_dataset(ds):
 
 class Squad(Net):
     def setup(self):
-        
-        def create_dense(input, input_size, output_size, relu=True):
-            weights = weight_var([input_size, output_size])
-            biases = weight_var([output_size])
-            r = tf.matmul(input, weights) + biases
-            return tf.nn.relu(r) if relu else r
-
         passage = tf.placeholder(tf.int32, [None, passage_max_length], name='passage')  # shape (batch_size, passage_max_length)
         question = tf.placeholder(tf.int32, [None, question_max_length], name='question')  # shape (batch_size, question_max_length)
         desired_output = tf.placeholder(tf.float32, [None, passage_max_length], name='desired_output')  # shape (batch_size, passage_max_length)
@@ -144,6 +137,9 @@ class Squad(Net):
         ########################
         # Answer-Pointer layer #
         ########################
+
+        # TODO: Switch this over to boundary model or add zero vector padding at end of H_r
+        #       ^ Might not be necessary ??
 
         # Weights and bias to compute `F`
         V = self.weight_variable(shape=[hidden_size, 2 * hidden_size])
