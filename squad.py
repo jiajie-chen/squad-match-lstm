@@ -105,18 +105,21 @@ class Squad(Net):
         b_alpha = self.bias_variable(shape=[])   # In the paper, this is `b`
 
         # Only calculate `WH_q` once
-        WH_q = tf.matmul(W_q, H_q)
+        WH_q = tf.matmul(W_q, H_q[0], transpose_b=True)
 
         # Results for forward and backward LSTMs
         H_r_forward = []
         H_r_backward = []
 
         with tf.variable_scope('forward_match_lstm'):
-            forward_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size), output_keep_prob=dropout)
-            forward_state = forward_cell.zero_state(batch_size, dtype=tf.float32)
+            forward_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size, state_is_tuple=True), output_keep_prob=dropout)
+            forward_state = forward_cell.zero_state(1, dtype=tf.float32) #batch_size is 1??
             h = forward_state.h
-            for i in range(len(H_p)):
-                G_forward = tf.tanh(WH_q + tf.tile((tf.matmul(W_p, H_p[i]) + tf.matmul(W_r, h) + b_p), [question_max_length, 1]))
+            for i in range(passage_max_length): #len(H_p) = passage_max_length
+                WH_p = tf.matmul(W_p, tf.reshape(H_p[0][i], [-1, 1])) # SQUARE PEG ROUND HOLE
+                Wh_r = tf.matmul(W_r, h, transpose_b=True)
+
+                G_forward = tf.tanh(WH_q + tf.tile((WH_p + Wh_r + b_p), [question_max_length, 1]))
                 alpha_forward = tf.nn.softmax(w * G_forward + tf.tile(b_alpha, [question_max_length, 1]))
 
                 z_forward = tf.concatenate(H_p[i], H_q * alpha_forward[i])
@@ -125,10 +128,10 @@ class Squad(Net):
 
         with tf.variable_scope('backward_match_lstm'):
             backward_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size), output_keep_prob=dropout)
-            backward_state = backward_cell.zero_state(batch_size, dtype=tf.float32)
-            h = backward_state.h
-            for i in reversed(range(len(H_p))):
-                G_backward = tf.tanh(WH_q + tf.tile((tf.matmul(W_p, H_p[i]) + tf.matmul(W_r, h) + b_p), [question_max_length, 1]))
+            backward_state = backward_cell.zero_state(1, dtype=tf.float32) #batch_size is 1??
+            h = backward_state
+            for i in reversed(range(passage_max_length)):
+                G_backward = tf.tanh(WH_q + tf.tile((tf.matmul(W_p, H_p[i], transpose_b=True) + tf.matmul(W_r, h) + b_p), [question_max_length, 1]))
                 alpha_backward = tf.nn.softmax(w * G_backward + tf.tile(b_alpha, [question_max_length, 1]))
 
                 z_backward = tf.concatenate(H_p[i], H_q * alpha_backward[i])
