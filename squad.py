@@ -67,6 +67,7 @@ class Squad(Net):
         
         embedding = tf.constant(embedding_matrix, name='embedding', dtype=tf.float32)
 
+
         #######################
         # Preprocessing layer #
         ####################### 
@@ -88,20 +89,20 @@ class Squad(Net):
             question_cell = tf.nn.rnn_cell.MultiRNNCell([question_cell] * 2)
             H_q, _ = tf.nn.dynamic_rnn(question_cell, question_embedded, dtype=tf.float32)  # shape (batch_size, question_max_length, hidden_size)
 
+
         ####################
         # Match-LSTM layer #
         ####################
-
 
         # Weights and bias to compute `G`
         W_q = self.weight_variable(shape=[hidden_size, hidden_size])
         W_p = self.weight_variable(shape=[hidden_size, hidden_size])
         W_r = self.weight_variable(shape=[hidden_size, hidden_size])
-        b_p = self.bias_variable( shape=[hidden_size])
+        b_p = self.bias_variable(shape=[hidden_size])
 
         # Weight and bias to compute `a`
-        w_t = self.weight_variable(shape=[hidden_size])
-        b_a = self.bias_variable(shape=[])
+        w = self.weight_variable(shape=[hidden_size])
+        b_alpha = self.bias_variable(shape=[])   # In the paper, this is `b`
 
         # Only calculate `WH_q` once
         WH_q = tf.matmul(W_q, H_q)
@@ -112,43 +113,65 @@ class Squad(Net):
 
         with tf.variable_scope('forward_match_lstm'):
             forward_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size), output_keep_prob=dropout)
-            forward_state = forward_cell.zero_state(batch_size, H_q.dtype)
+            forward_state = forward_cell.zero_state(batch_size, dtype=tf.float32)
             h = forward_state.h
             for i in range(len(H_p)):
-                outer_product = tf.tile((tf.matmul(W_p, H_p[i]) + tf.matmul(W_r, h) + b_p), [question_max_length, 1])
-                G_forward = tf.tanh(WH_q + outer_product)
-                bias_outside_product = tf.tile(b_a, [question_max_length, 1])
-                a_forward = tf.nn.softmax(w_t * G_forward + bias_variable) # Resulting attention weight vector
+                G_forward = tf.tanh(WH_q + tf.tile((tf.matmul(W_p, H_p[i]) + tf.matmul(W_r, h) + b_p), [question_max_length, 1]))
+                alpha_forward = tf.nn.softmax(w * G_forward + tf.tile(b_alpha, [question_max_length, 1]))
 
-                z_forward = tf.concatenate(h_pi, H_q * a_forward[i])
+                z_forward = tf.concatenate(H_p[i], H_q * alpha_forward[i])
                 h, forward_state = forward_cell(z_forward, forward_state)
-                H_r_forward.append(h);
+                H_r_forward.append(h)
 
         with tf.variable_scope('backward_match_lstm'):
             backward_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size), output_keep_prob=dropout)
-            backward_state = backward_cell.zero_state(batch_size, H_q.dtype)
+            backward_state = backward_cell.zero_state(batch_size, dtype=tf.float32)
             h = backward_state.h
             for i in reversed(range(len(H_p))):
-                outer_product = tf.tile((tf.matmul(W_p, H_p[i]) + tf.matmul(W_r, h) + b_p), [question_max_length, 1])
-                G_backward = tf.tanh(WH_q + outer_product)
-                bias_outside_product = tf.tile(b_a, [question_max_length, 1])
-                a_backward = tf.nn.softmax(w_t * G_backward + bias_variable) # Resulting attention weight vector
+                G_backward = tf.tanh(WH_q + tf.tile((tf.matmul(W_p, H_p[i]) + tf.matmul(W_r, h) + b_p), [question_max_length, 1]))
+                alpha_backward = tf.nn.softmax(w * G_backward + tf.tile(b_alpha, [question_max_length, 1]))
 
-                z_backward = tf.concatenate(h_pi, H_q * a_backward[i])
+                z_backward = tf.concatenate(H_p[i], H_q * alpha_backward[i])
                 h, backward_state = backward_cell(z_backward, backward_state)
-                H_r_backward.append(h);
+                H_r_backward.append(h)
 
         # After finding forward and backward `H_r[i]` for all `i`, concatenate `H_r_forward` and `H_r_backward`
         H_r = tf.concatenate(H_r_forward, H_r_backward)
+
+        # TODO: Assert that the shape of `H_r` is (2 * hidden_size, passage_max_length)
+
 
         ########################
         # Answer-Pointer layer #
         ########################
 
-        # TODO: this layer
+        # Weights and bias to compute `F`
+        V = self.weight_variable(shape=[hidden_size, 2 * hidden_size])
+        W_a = self.weight_variable(shape=[hidden_size, hidden_size])
+        b_a = self.bias_variable(shape=[hidden_size])   # In the paper, this is `c`
 
+        # Weight and bias to compute `beta`
+        v = self.weight_variable(shape=[hidden_size])
+        b_beta = self.bias_variable(shape=[])
+
+        # Only calculate `VH` once
+        VH = tf.matmul(V, H_r)        # shape (hidden_size, passage_max_length)
+
+        H_a = []
+
+        with tf.variable_scope('answer_pointer_lstm'):
+            pointer_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size), output_keep_prob=dropout)
+            pointer_state = pointer_cell.zero_state(batch_size, dtype=tf.float32)
+            h = pointer_state.h
+            for k in range(len(H_p)):
+                F = tf.tanh(VH + tf.tile((tf.matmul(W_a, H_a[k]) + b_a), [passage_max_length, 1]))
+                beta = tf.nn.softmax(v * F + tf.tile(b_beta, [passage_max_length, 1]))
+
+                h, pointer_state = pointer_cell(tf.matmul(H_r, beta), pointer_state)
+                H_a.append(h)
         
-        # output = tf.Print(output, [output])
+
+        # TODO: Replace the loss function below with the loss function from the paper
         loss = tf.reduce_mean(tf.reduce_sum(tf.pow(desired_output - output, 2), reduction_indices=[1]))
         train_step = tf.train.AdamOptimizer(0.001).minimize(loss)
         
