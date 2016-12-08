@@ -98,11 +98,13 @@ class Squad(Net):
         W_q = self.weight_variable(shape=[hidden_size, hidden_size])
         W_p = self.weight_variable(shape=[hidden_size, hidden_size])
         W_r = self.weight_variable(shape=[hidden_size, hidden_size])
-        b_p = self.bias_variable(shape=[hidden_size])
+        b_p = self.bias_variable(shape=[hidden_size, 1]) # needs to be 50x1
 
         # Weight and bias to compute `a`
-        w = self.weight_variable(shape=[hidden_size])
-        b_alpha = self.bias_variable(shape=[])   # In the paper, this is `b`
+        w = self.weight_variable(shape=[hidden_size, 1])
+        b_alpha = self.bias_variable(shape=[1, 1])   # In the paper, this is `b` (scalar value)
+
+        # BATCHING STARTS HERE
 
         # Only calculate `WH_q` once
         WH_q = tf.matmul(W_q, H_q[0], transpose_b=True)
@@ -111,18 +113,20 @@ class Squad(Net):
         H_r_forward = []
         H_r_backward = []
 
-        with tf.variable_scope('forward_match_lstm'):
+        with tf.variable_scope('forward_match_lstm', reuse=None):
             forward_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size, state_is_tuple=True), output_keep_prob=dropout)
             forward_state = forward_cell.zero_state(1, dtype=tf.float32) #batch_size is 1??
             h = forward_state.h
-            for i in range(passage_max_length): #len(H_p) = passage_max_length
+            for i in range(passage_max_length): # len(H_p) = passage_max_length
                 WH_p = tf.matmul(W_p, tf.reshape(H_p[0][i], [-1, 1])) # SQUARE PEG ROUND HOLE
                 Wh_r = tf.matmul(W_r, h, transpose_b=True)
 
-                G_forward = tf.tanh(WH_q + tf.tile((WH_p + Wh_r + b_p), [question_max_length, 1]))
-                alpha_forward = tf.nn.softmax(w * G_forward + tf.tile(b_alpha, [question_max_length, 1]))
+                G_forward = tf.tanh(WH_q + tf.tile((WH_p + Wh_r + b_p), [1, question_max_length]))
+                wG_forward = tf.matmul(w, G_forward, transpose_a=True)
+                alpha_forward = tf.nn.softmax(tf.transpose(wG_forward) + tf.tile(b_alpha, [question_max_length, 1]))
 
-                z_forward = tf.concatenate(H_p[i], H_q * alpha_forward[i])
+                z_forward = tf.concat(0, [tf.reshape(H_p[0][i], [-1, 1]), tf.matmul(H_q[0], alpha_forward, transpose_a=True)])
+                z_forward = tf.transpose(z_forward)
                 h, forward_state = forward_cell(z_forward, forward_state)
                 H_r_forward.append(h)
 
