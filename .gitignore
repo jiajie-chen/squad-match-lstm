@@ -91,3 +91,5 @@ ENV/
 data/glove.6B.50d.txt
 cache/
 save/
+
+.DS_Store

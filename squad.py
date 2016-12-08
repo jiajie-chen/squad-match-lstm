@@ -16,6 +16,8 @@ vocab_size, embedding_size = embedding_matrix.shape
 passage_max_length = 200
 question_max_length = 20
 
+hidden_size = 50
+
 def vectorize(text, fixed_length=None):
     vocab_size = len(vocab_lookup)
     tokens = tokenize(text)
@@ -52,51 +54,124 @@ def questions_from_dataset(ds):
 
 class Squad(Net):
     def setup(self):
-        passage = tf.placeholder(tf.int32, [None, passage_max_length], name='passage')
-        question = tf.placeholder(tf.int32, [None, question_max_length], name='question')
-        desired_output = tf.placeholder(tf.float32, [None, passage_max_length], name='desired_output')
-        
-        embedding = tf.constant(embedding_matrix, name='embedding', dtype=tf.float32)
-        question_embedded = tf.nn.embedding_lookup(embedding, question)
-        passage_embedded = tf.nn.embedding_lookup(embedding, passage)
         
         def create_dense(input, input_size, output_size, relu=True):
             weights = weight_var([input_size, output_size])
             biases = weight_var([output_size])
             r = tf.matmul(input, weights) + biases
             return tf.nn.relu(r) if relu else r
+
+        passage = tf.placeholder(tf.int32, [None, passage_max_length], name='passage')  # shape (batch_size, passage_max_length)
+        question = tf.placeholder(tf.int32, [None, question_max_length], name='question')  # shape (batch_size, question_max_length)
+        desired_output = tf.placeholder(tf.float32, [None, passage_max_length], name='desired_output')  # shape (batch_size, passage_max_length)
         
+        embedding = tf.constant(embedding_matrix, name='embedding', dtype=tf.float32)
+
+
+        #######################
+        # Preprocessing layer #
+        ####################### 
+
+        passage_embedded = tf.nn.embedding_lookup(embedding, passage)  # shape (batch_size, passage_max_length, embedding_size)
+        question_embedded = tf.nn.embedding_lookup(embedding, question)  # shape (batch_size, question_max_length, embedding_size)
+
         dropout = tf.placeholder(tf.float32)
-        
-        with tf.variable_scope('question_lstm'):
-            question_cell = tf.nn.rnn_cell.LSTMCell(embedding_size)
-            question_cell = tf.nn.rnn_cell.DropoutWrapper(question_cell, output_keep_prob=dropout)
-            question_cell = tf.nn.rnn_cell.MultiRNNCell([question_cell] * 2)
-            question_vecs, _ = tf.nn.dynamic_rnn(question_cell, question_embedded, dtype=tf.float32)
-        
-        question_vecs = tf.transpose(question_vecs, [1, 0, 2])
-        question_vec = tf.gather(question_vecs, int(question_vecs.get_shape()[0]) - 1) # shape is (batch_size, embedding_size)
-        question_vec = tf.reshape(question_vec, (-1, 1, embedding_size))
-        
-        # for each token vector in the passage, concatenate the question vec onto the end
-        question_vec = tf.tile(question_vec, [1, passage_max_length, 1])
-        passage_with_question = tf.concat(2, [passage_embedded, question_vec])
-        
+
         with tf.variable_scope('passage_lstm'):
-            passage_cell = tf.nn.rnn_cell.LSTMCell(embedding_size * 2)
+            passage_cell = tf.nn.rnn_cell.LSTMCell(hidden_size)
             passage_cell = tf.nn.rnn_cell.DropoutWrapper(passage_cell, output_keep_prob=dropout)
             passage_cell = tf.nn.rnn_cell.MultiRNNCell([passage_cell] * 2)
-            sequence_labels, _ = tf.nn.dynamic_rnn(passage_cell, passage_with_question, dtype=tf.float32)
+            H_p, _ = tf.nn.dynamic_rnn(passage_cell, passage_embedded, dtype=tf.float32)  # shape (batch_size, passage_max_length, hidden_size)
         
-        sequence_label_size = embedding_size * 2
-        seq_reshaped = tf.reshape(sequence_labels, (-1, sequence_label_size))
-        output_reshaped = create_dense(seq_reshaped, sequence_label_size, 1)
-        output = tf.reshape(output_reshaped, (-1, passage_max_length))
-        output = tf.nn.softmax(output)
+        with tf.variable_scope('question_lstm'):
+            question_cell = tf.nn.rnn_cell.LSTMCell(hidden_size)
+            question_cell = tf.nn.rnn_cell.DropoutWrapper(question_cell, output_keep_prob=dropout)
+            question_cell = tf.nn.rnn_cell.MultiRNNCell([question_cell] * 2)
+            H_q, _ = tf.nn.dynamic_rnn(question_cell, question_embedded, dtype=tf.float32)  # shape (batch_size, question_max_length, hidden_size)
+
+
+        ####################
+        # Match-LSTM layer #
+        ####################
+
+        # Weights and bias to compute `G`
+        W_q = self.weight_variable(shape=[hidden_size, hidden_size])
+        W_p = self.weight_variable(shape=[hidden_size, hidden_size])
+        W_r = self.weight_variable(shape=[hidden_size, hidden_size])
+        b_p = self.bias_variable(shape=[hidden_size])
+
+        # Weight and bias to compute `a`
+        w = self.weight_variable(shape=[hidden_size])
+        b_alpha = self.bias_variable(shape=[])   # In the paper, this is `b`
+
+        # Only calculate `WH_q` once
+        WH_q = tf.matmul(W_q, H_q)
+
+        # Results for forward and backward LSTMs
+        H_r_forward = []
+        H_r_backward = []
+
+        with tf.variable_scope('forward_match_lstm'):
+            forward_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size), output_keep_prob=dropout)
+            forward_state = forward_cell.zero_state(batch_size, dtype=tf.float32)
+            h = forward_state.h
+            for i in range(len(H_p)):
+                G_forward = tf.tanh(WH_q + tf.tile((tf.matmul(W_p, H_p[i]) + tf.matmul(W_r, h) + b_p), [question_max_length, 1]))
+                alpha_forward = tf.nn.softmax(w * G_forward + tf.tile(b_alpha, [question_max_length, 1]))
+
+                z_forward = tf.concatenate(H_p[i], H_q * alpha_forward[i])
+                h, forward_state = forward_cell(z_forward, forward_state)
+                H_r_forward.append(h)
+
+        with tf.variable_scope('backward_match_lstm'):
+            backward_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size), output_keep_prob=dropout)
+            backward_state = backward_cell.zero_state(batch_size, dtype=tf.float32)
+            h = backward_state.h
+            for i in reversed(range(len(H_p))):
+                G_backward = tf.tanh(WH_q + tf.tile((tf.matmul(W_p, H_p[i]) + tf.matmul(W_r, h) + b_p), [question_max_length, 1]))
+                alpha_backward = tf.nn.softmax(w * G_backward + tf.tile(b_alpha, [question_max_length, 1]))
+
+                z_backward = tf.concatenate(H_p[i], H_q * alpha_backward[i])
+                h, backward_state = backward_cell(z_backward, backward_state)
+                H_r_backward.append(h)
+
+        # After finding forward and backward `H_r[i]` for all `i`, concatenate `H_r_forward` and `H_r_backward`
+        H_r = tf.concatenate(H_r_forward, H_r_backward)
+
+        # TODO: Assert that the shape of `H_r` is (2 * hidden_size, passage_max_length)
+
+
+        ########################
+        # Answer-Pointer layer #
+        ########################
+
+        # Weights and bias to compute `F`
+        V = self.weight_variable(shape=[hidden_size, 2 * hidden_size])
+        W_a = self.weight_variable(shape=[hidden_size, hidden_size])
+        b_a = self.bias_variable(shape=[hidden_size])   # In the paper, this is `c`
+
+        # Weight and bias to compute `beta`
+        v = self.weight_variable(shape=[hidden_size])
+        b_beta = self.bias_variable(shape=[])
+
+        # Only calculate `VH` once
+        VH = tf.matmul(V, H_r)        # shape (hidden_size, passage_max_length)
+
+        H_a = []
+
+        with tf.variable_scope('answer_pointer_lstm'):
+            pointer_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size), output_keep_prob=dropout)
+            pointer_state = pointer_cell.zero_state(batch_size, dtype=tf.float32)
+            h = pointer_state.h
+            for k in range(len(H_p)):
+                F = tf.tanh(VH + tf.tile((tf.matmul(W_a, H_a[k]) + b_a), [passage_max_length, 1]))
+                beta = tf.nn.softmax(v * F + tf.tile(b_beta, [passage_max_length, 1]))
+
+                h, pointer_state = pointer_cell(tf.matmul(H_r, beta), pointer_state)
+                H_a.append(h)
         
-        desired_output = tf.nn.softmax(desired_output)
-        
-        # output = tf.Print(output, [output])
+
+        # TODO: Replace the loss function below with the loss function from the paper
         loss = tf.reduce_mean(tf.reduce_sum(tf.pow(desired_output - output, 2), reduction_indices=[1]))
         train_step = tf.train.AdamOptimizer(0.001).minimize(loss)
         
@@ -118,6 +193,16 @@ class Squad(Net):
         feed = {self.passage: passages, self.question: questions, self.desired_output: masks, self.dropout: 0.5}
         _, loss = self.session.run([self.train_step, self.loss], feed_dict=feed)
         print loss
+
+    @staticmethod
+    def weight_variable(shape, name=None):
+        initial = tf.truncated_normal(shape, stddev=0.1)
+        return tf.Variable(initial, name=name)
+
+    @staticmethod
+    def bias_variable(shape, name=None):
+        initial = tf.constant(0.1, shape=shape)
+        return tf.Variable(initial, name=name)
 
 def iterate_batches(list, size=10):
     i = 0
