@@ -7,6 +7,8 @@ def show(html):
     Instantiates a trivial http server and calls webbrowser.open with a URL
     to retrieve html from that server.
     """
+    with open('visual.html', 'w+') as f:
+        f.write(html)
 
     class RequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -16,7 +18,8 @@ def show(html):
 
     server = BaseHTTPServer.HTTPServer(('127.0.0.1', 0), RequestHandler)
     webbrowser.open('http://127.0.0.1:%s' % server.server_port)
-    server.handle_request()
+    while True:
+        server.handle_request()
 
 if __name__ == '__main__':
     show('<b>Hello World</b>')
