@@ -84,6 +84,7 @@ class Squad(Net):
             question_cell = tf.nn.rnn_cell.MultiRNNCell([question_cell] * 2)
             H_q, _ = tf.nn.dynamic_rnn(question_cell, question_embedded, dtype=tf.float32)  # shape (batch_size, question_max_length, hidden_size)
 
+        H_p = tf.Print(H_p, [H_p], "H_p")
 
         ####################
         # Match-LSTM layer #
@@ -103,6 +104,8 @@ class Squad(Net):
 
         # Only calculate `WH_q` once
         WH_q = tf.matmul(W_q, H_q[0], transpose_b=True)
+
+        WH_q = tf.Print(WH_q, [WH_q], "WH_q")
 
         # Results for forward and backward LSTMs
         H_r_forward = []
@@ -153,6 +156,8 @@ class Squad(Net):
         H_r_backward = tf.concat(1, H_r_backward)
         H_r = tf.concat(0, [H_r_forward, H_r_backward])
 
+        H_r = tf.Print(H_r, [H_r], 'H_r')
+
         # TODO: Assert that the shape of `H_r` is (2 * hidden_size, passage_max_length)
 
 
@@ -186,13 +191,15 @@ class Squad(Net):
 
                 F = tf.tanh(VH + tf.tile((Wh_a + b_a), [1, passage_max_length]))
                 output_k = tf.matmul(v, F, transpose_a=True) + tf.tile(b_beta, [1, passage_max_length])
+                output_k = tf.Print(output_k, [output_k], 'output_k')
                 output.append(output_k)
                 beta = tf.nn.softmax(output_k)
 
                 h, pointer_state = pointer_cell(tf.transpose(tf.matmul(H_r, beta, transpose_b=True)), pointer_state)
         
-
-        loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(output, desired_output))
+        output = tf.concat(0, output)
+        
+        loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(output, desired_output[0]))
         train_step = tf.train.AdamOptimizer(0.001).minimize(loss)
         
         self.passage = passage
@@ -211,9 +218,10 @@ class Squad(Net):
         passages = np.array([passage for ((passage, _), _) in vectors])
         answers = np.array([answer for ((_, _), answer) in vectors])
         
+        print "Passages: {0}   Questions: {1}   Answers: {2}".format(len(passages), len(questions), len(answers))
         feed = {self.passage: passages, self.question: questions, self.desired_output: answers, self.dropout: 0.5}
         _, loss = self.session.run([self.train_step, self.loss], feed_dict=feed)
-        print loss
+        print "Current loss: {0}".format(loss)
 
     @staticmethod
     def weight_variable(shape, name=None):
