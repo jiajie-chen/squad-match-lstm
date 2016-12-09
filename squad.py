@@ -233,6 +233,22 @@ class Squad(Net):
         with open('loss.txt', 'a+') as f:
             f.write("{0}\n".format(loss))
 
+    def test(self, paragraph_question_pairs):
+        vectors = [vectors_from_question(p, q) for p, q in paragraph_question_pairs]
+        vectors = [v for vector in vectors for v in vector] # flatten vectors
+
+        questions = np.array([question for ((_, question), _) in vectors])
+        passages = np.array([passage for ((passage, _), _) in vectors])
+        answers = np.array([answer for ((_, _), answer) in vectors])
+        
+        print "Passages: {0}   Questions: {1}   Answers: {2}".format(len(passages), len(questions), len(answers))
+        feed = {self.passage: passages, self.question: questions, self.dropout: 1}
+        output = self.session.run(self.output, feed_dict=feed)
+        output_start = np.argmax(output[0])
+        output_end = np.argmax(output[1])
+
+        print "Accuracy: {0}".format(output_start == answer[0][0] && output_end == answers[0][1])
+
     @staticmethod
     def weight_variable(shape, name=None):
         initial = tf.truncated_normal(shape, stddev=0.1)
