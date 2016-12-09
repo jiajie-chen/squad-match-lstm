@@ -113,11 +113,14 @@ class Squad(Net):
         H_r_forward = []
         H_r_backward = []
 
-        with tf.variable_scope('forward_match_lstm', reuse=None):
+        with tf.variable_scope('forward_match_lstm') as scope:
             forward_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size, state_is_tuple=True), output_keep_prob=dropout)
             forward_state = forward_cell.zero_state(1, dtype=tf.float32) #batch_size is 1??
             h = forward_state.h
             for i in range(passage_max_length): # len(H_p) = passage_max_length
+                if i > 0: # lets you reuse h and forward_state per iteration
+                    scope.reuse_variables()
+
                 WH_p = tf.matmul(W_p, tf.reshape(H_p[0][i], [-1, 1])) # SQUARE PEG ROUND HOLE
                 Wh_r = tf.matmul(W_r, h, transpose_b=True)
 
@@ -128,22 +131,32 @@ class Squad(Net):
                 z_forward = tf.concat(0, [tf.reshape(H_p[0][i], [-1, 1]), tf.matmul(H_q[0], alpha_forward, transpose_a=True)])
                 z_forward = tf.transpose(z_forward)
                 h, forward_state = forward_cell(z_forward, forward_state)
-                H_r_forward.append(h)
+                H_r_forward.append(tf.transpose(h))
 
-        with tf.variable_scope('backward_match_lstm'):
-            backward_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size), output_keep_prob=dropout)
+        with tf.variable_scope('backward_match_lstm') as scope:
+            backward_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size, state_is_tuple=True), output_keep_prob=dropout)
             backward_state = backward_cell.zero_state(1, dtype=tf.float32) #batch_size is 1??
-            h = backward_state
+            h = backward_state.h
             for i in reversed(range(passage_max_length)):
-                G_backward = tf.tanh(WH_q + tf.tile((tf.matmul(W_p, H_p[i], transpose_b=True) + tf.matmul(W_r, h) + b_p), [question_max_length, 1]))
-                alpha_backward = tf.nn.softmax(w * G_backward + tf.tile(b_alpha, [question_max_length, 1]))
+                if i < passage_max_length-1: # lets you reuse h and backward_state per iteration
+                    scope.reuse_variables()
 
-                z_backward = tf.concatenate(H_p[i], H_q * alpha_backward[i])
+                WH_p = tf.matmul(W_p, tf.reshape(H_p[0][i], [-1, 1]))
+                Wh_r = tf.matmul(W_r, h, transpose_b=True)
+
+                G_backward = tf.tanh(WH_q + tf.tile((WH_p + Wh_r + b_p), [1, question_max_length]))
+                wG_backward = tf.matmul(w, G_backward, transpose_a=True)
+                alpha_backward = tf.nn.softmax(tf.transpose(wG_backward) + tf.tile(b_alpha, [question_max_length, 1]))
+
+                z_backward = tf.concat(0, [tf.reshape(H_p[0][i], [-1, 1]), tf.matmul(H_q[0], alpha_backward, transpose_a=True)])
+                z_backward = tf.transpose(z_backward)
                 h, backward_state = backward_cell(z_backward, backward_state)
-                H_r_backward.append(h)
+                H_r_backward.append(tf.transpose(h))
 
         # After finding forward and backward `H_r[i]` for all `i`, concatenate `H_r_forward` and `H_r_backward`
-        H_r = tf.concatenate(H_r_forward, H_r_backward)
+        H_r_forward = tf.concat(1, H_r_forward)
+        H_r_backward = tf.concat(1, H_r_backward)
+        H_r = tf.concat(0, [H_r_forward, H_r_backward])
 
         # TODO: Assert that the shape of `H_r` is (2 * hidden_size, passage_max_length)
 
