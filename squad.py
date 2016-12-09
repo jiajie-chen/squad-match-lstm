@@ -54,13 +54,6 @@ def questions_from_dataset(ds):
 
 class Squad(Net):
     def setup(self):
-        
-        def create_dense(input, input_size, output_size, relu=True):
-            weights = weight_var([input_size, output_size])
-            biases = weight_var([output_size])
-            r = tf.matmul(input, weights) + biases
-            return tf.nn.relu(r) if relu else r
-
         passage = tf.placeholder(tf.int32, [None, passage_max_length], name='passage')  # shape (batch_size, passage_max_length)
         question = tf.placeholder(tf.int32, [None, question_max_length], name='question')  # shape (batch_size, question_max_length)
         desired_output = tf.placeholder(tf.float32, [None, passage_max_length], name='desired_output')  # shape (batch_size, passage_max_length)
@@ -168,23 +161,35 @@ class Squad(Net):
         # Weights and bias to compute `F`
         V = self.weight_variable(shape=[hidden_size, 2 * hidden_size])
         W_a = self.weight_variable(shape=[hidden_size, hidden_size])
-        b_a = self.bias_variable(shape=[hidden_size])   # In the paper, this is `c`
+        b_a = self.bias_variable(shape=[hidden_size, 1])   # In the paper, this is `c`
 
         # Weight and bias to compute `beta`
-        v = self.weight_variable(shape=[hidden_size])
-        b_beta = self.bias_variable(shape=[])
+        v = self.weight_variable(shape=[hidden_size, 1])
+        b_beta = self.bias_variable(shape=[1, 1])
 
         # Only calculate `VH` once
         VH = tf.matmul(V, H_r)        # shape (hidden_size, passage_max_length)
 
         H_a = []
 
-        with tf.variable_scope('answer_pointer_lstm'):
-            pointer_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size), output_keep_prob=dropout)
-            pointer_state = pointer_cell.zero_state(batch_size, dtype=tf.float32)
+        with tf.variable_scope('answer_pointer_lstm') as scope:
+            pointer_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size, state_is_tuple=True), output_keep_prob=dropout)
+            pointer_state = pointer_cell.zero_state(1, dtype=tf.float32)
             h = pointer_state.h
-            for k in range(len(H_p)):
-                F = tf.tanh(VH + tf.tile((tf.matmul(W_a, H_a[k]) + b_a), [passage_max_length, 1]))
+            for k in range(passage_max_length):
+                if k > 0:
+                    scope.reuse_variables()
+
+                Wh_a = tf.matmul(W_a, h, transpose_b=True)
+
+                print 'Wh_a'
+                print Wh_a.get_shape()
+                print 'b_a'
+                print b_a.get_shape()
+                print 'VH'
+                print VH.get_shape()
+
+                F = tf.tanh(VH + tf.tile((Wh_a + b_a), [passage_max_length, 1]))
                 beta = tf.nn.softmax(v * F + tf.tile(b_beta, [passage_max_length, 1]))
 
                 h, pointer_state = pointer_cell(tf.matmul(H_r, beta), pointer_state)
