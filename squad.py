@@ -13,10 +13,12 @@ vocab, embedding_matrix = embeddings()
 vocab_lookup = {word: i for i, word in enumerate(vocab)}
 vocab_size, embedding_size = embedding_matrix.shape
 
-passage_max_length = 500
-question_max_length = 50
+passage_max_length = 200
+question_max_length = 20
 
 hidden_size = 50
+
+out_file = open('loss.txt', 'a')
 
 def vectorize(text, fixed_length=None):
     vocab_size = len(vocab_lookup)
@@ -228,6 +230,8 @@ class Squad(Net):
         feed = {self.passage: passages, self.question: questions, self.desired_output: answers, self.dropout: 0.5}
         _, loss = self.session.run([self.train_step, self.loss], feed_dict=feed)
         print "Current loss: {0}".format(loss)
+        with open('loss.txt', 'a+') as f:
+            f.write("{0}\n".format(loss))
 
     @staticmethod
     def weight_variable(shape, name=None):
@@ -244,19 +248,24 @@ def iterate_batches(list, size=10):
     while True:
         yield [list[i+j] for j in range(size)]
         i += size
+        if i + j > len(list):
+            i = 0
 
 n = Squad(dir_path='save/squad3')
 
 def train():
     questions = list(questions_from_dataset(dataset.train()))
     random.shuffle(questions)
+    print "{0} Questions".format(len(questions))
+    questions = [q for q in questions if len(q[0].passage) < 200]
+    print "{0} Questions".format(len(questions))
     test_questions = list(questions_from_dataset(dataset.test()))
     random.shuffle(test_questions)
     
     i = 0
     for i, batch in enumerate(iterate_batches(questions, size=1)):
         n.train(batch)
-        if i % 10 == 0:
+        if i % 500 == 0:
             n.save(i)
 
 def generate_heatmap(net, para, question):
