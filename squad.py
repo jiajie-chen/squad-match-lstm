@@ -248,7 +248,7 @@ def iterate_batches(list, size=10):
     while True:
         yield [list[i+j] for j in range(size)]
         i += size
-        if i + j > len(list):
+        if i + size > len(list):
             i = 0
 
 n = Squad(dir_path='save/squad3')
