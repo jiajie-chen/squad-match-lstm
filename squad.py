@@ -37,15 +37,17 @@ def make_fixed_length(a, length):
     return np.concatenate([a, [0] * (length - len(a))]) if len(a) < length else a[:length]
 
 def vectors_from_question(para, qa):
-    # return an (input, output) tuple, where input is a tuple (passage, question) and output is an output mask
+    # return a list of (input, output) tuples, where input is a tuple (passage, question) and output is an array (start, end) for the answer
     passage = vectorize(para.passage, fixed_length=passage_max_length)
-    # print para.passage
     question = vectorize(qa.question, fixed_length=question_max_length)
-    # print qa.question
-    # print [answer['text'] for answer in qa.answers]
-    mask = output_mask(para.passage, [answer['text'] for answer in qa.answers])
-    mask = make_fixed_length(mask, passage_max_length)
-    return (passage, question), mask
+
+    answers = []
+    for answer in qa.answers:
+        start = answer['answer_start']
+        end = start + len(answer['text'])
+        answers.append(np.array([start, end]))
+
+    return [((passage, question), answer) for answer in answers]
 
 def questions_from_dataset(ds):
     for para in ds.paragraphs:
@@ -56,7 +58,7 @@ class Squad(Net):
     def setup(self):
         passage = tf.placeholder(tf.int32, [None, passage_max_length], name='passage')  # shape (batch_size, passage_max_length)
         question = tf.placeholder(tf.int32, [None, question_max_length], name='question')  # shape (batch_size, question_max_length)
-        desired_output = tf.placeholder(tf.float32, [None, passage_max_length], name='desired_output')  # shape (batch_size, passage_max_length)
+        desired_output = tf.placeholder(tf.int32, [None, 2], name='desired_output')  # shape (batch_size, passage_max_length)
         
         embedding = tf.constant(embedding_matrix, name='embedding', dtype=tf.float32)
 
@@ -170,34 +172,27 @@ class Squad(Net):
         # Only calculate `VH` once
         VH = tf.matmul(V, H_r)        # shape (hidden_size, passage_max_length)
 
-        H_a = []
+        output = []
 
         with tf.variable_scope('answer_pointer_lstm') as scope:
             pointer_cell = tf.nn.rnn_cell.DropoutWrapper(tf.nn.rnn_cell.LSTMCell(hidden_size, state_is_tuple=True), output_keep_prob=dropout)
             pointer_state = pointer_cell.zero_state(1, dtype=tf.float32)
             h = pointer_state.h
-            for k in range(passage_max_length):
+            for k in range(2):
                 if k > 0:
                     scope.reuse_variables()
 
                 Wh_a = tf.matmul(W_a, h, transpose_b=True)
 
-                print 'Wh_a'
-                print Wh_a.get_shape()
-                print 'b_a'
-                print b_a.get_shape()
-                print 'VH'
-                print VH.get_shape()
-
                 F = tf.tanh(VH + tf.tile((Wh_a + b_a), [1, passage_max_length]))
-                beta = tf.nn.softmax(v * F + tf.tile(b_beta, [passage_max_length, 1]))
+                output_k = tf.matmul(v, F, transpose_a=True) + tf.tile(b_beta, [1, passage_max_length])
+                output.append(output_k)
+                beta = tf.nn.softmax(output_k)
 
-                h, pointer_state = pointer_cell(tf.matmul(H_r, beta), pointer_state)
-                H_a.append(h)
+                h, pointer_state = pointer_cell(tf.transpose(tf.matmul(H_r, beta, transpose_b=True)), pointer_state)
         
 
-        # TODO: Replace the loss function below with the loss function from the paper
-        loss = tf.reduce_mean(tf.reduce_sum(tf.pow(desired_output - output, 2), reduction_indices=[1]))
+        loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(output, desired_output))
         train_step = tf.train.AdamOptimizer(0.001).minimize(loss)
         
         self.passage = passage
@@ -210,12 +205,13 @@ class Squad(Net):
     
     def train(self, paragraph_question_pairs):
         vectors = [vectors_from_question(p, q) for p, q in paragraph_question_pairs]
-        # print vectors[0]
-        questions = np.array([question for ((passage, question), mask) in vectors])
-        passages = np.array([passage for ((passage, question), mask) in vectors])
-        masks = np.array([mask for ((passage, question), mask) in vectors])
+        vectors = [v for vector in vectors for v in vector] # flatten vectors
+
+        questions = np.array([question for ((_, question), _) in vectors])
+        passages = np.array([passage for ((passage, _), _) in vectors])
+        answers = np.array([answer for ((_, _), answer) in vectors])
         
-        feed = {self.passage: passages, self.question: questions, self.desired_output: masks, self.dropout: 0.5}
+        feed = {self.passage: passages, self.question: questions, self.desired_output: answers, self.dropout: 0.5}
         _, loss = self.session.run([self.train_step, self.loss], feed_dict=feed)
         print loss
 
@@ -235,7 +231,7 @@ def iterate_batches(list, size=10):
         yield [list[i+j] for j in range(size)]
         i += size
 
-n = Squad(dir_path='save/squad1')
+n = Squad(dir_path='save/squad3')
 
 def train():
     questions = list(questions_from_dataset(dataset.train()))
@@ -244,16 +240,18 @@ def train():
     random.shuffle(test_questions)
     
     i = 0
-    for i, batch in enumerate(iterate_batches(questions, size=20)):
+    for i, batch in enumerate(iterate_batches(questions, size=1)):
         n.train(batch)
         if i % 10 == 0:
             n.save(i)
 
 def generate_heatmap(net, para, question):
     vectors = [vectors_from_question(p, q) for p, q in [(para, question)]]
-    questions = np.array([q for ((p, q), mask) in vectors])
-    passages = np.array([p for ((p, q), mask) in vectors])
-    mask = net.session.run(net.output, {net.dropout: 1, net.question: questions, net.passage: passages})[0]
+    vectors = [v for vector in vectors for v in vector] # flatten vectors
+
+    questions = np.array([q for ((p, q), a) in vectors])
+    passages = np.array([p for ((p, q), a) in vectors])
+    answer = net.session.run(net.output, {net.dropout: 1, net.question: questions, net.passage: passages})[0]
     
     top_n = sorted(range(len(mask)), key=lambda i: mask[i], reverse=True)[:10]
     mask = [(1 if i in top_n else 0) for i in range(len(mask))]
