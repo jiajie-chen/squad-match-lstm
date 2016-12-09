@@ -274,7 +274,9 @@ def generate_heatmap(net, para, question):
 
     questions = np.array([q for ((p, q), a) in vectors])
     passages = np.array([p for ((p, q), a) in vectors])
-    answer = net.session.run(net.output, {net.dropout: 1, net.question: questions, net.passage: passages})[0]
+    answer = net.session.run(net.output, {net.dropout: 1, net.question: questions, net.passage: passages})
+    print "Answer:"
+    print answer
     answer_start = np.argmax(answer[0])
     answer_end = np.argmax(answer[1])
 
