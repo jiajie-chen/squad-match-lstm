@@ -275,6 +275,10 @@ def generate_heatmap(net, para, question):
     questions = np.array([q for ((p, q), a) in vectors])
     passages = np.array([p for ((p, q), a) in vectors])
     answer = net.session.run(net.output, {net.dropout: 1, net.question: questions, net.passage: passages})[0]
+    answer_start = np.argmax(answer[0])
+    answer_end = np.argmax(answer[1])
+
+    mask = [(1 if i in range(answer_start, answer_end) else 0) for i in range(passage_max_length)]
     
     top_n = sorted(range(len(mask)), key=lambda i: mask[i], reverse=True)[:10]
     mask = [(1 if i in top_n else 0) for i in range(len(mask))]
