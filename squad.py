@@ -189,7 +189,7 @@ class Squad(Net):
                 print 'VH'
                 print VH.get_shape()
 
-                F = tf.tanh(VH + tf.tile((Wh_a + b_a), [passage_max_length, 1]))
+                F = tf.tanh(VH + tf.tile((Wh_a + b_a), [1, passage_max_length]))
                 beta = tf.nn.softmax(v * F + tf.tile(b_beta, [passage_max_length, 1]))
 
                 h, pointer_state = pointer_cell(tf.matmul(H_r, beta), pointer_state)
