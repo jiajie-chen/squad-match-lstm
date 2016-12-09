@@ -13,8 +13,8 @@ vocab, embedding_matrix = embeddings()
 vocab_lookup = {word: i for i, word in enumerate(vocab)}
 vocab_size, embedding_size = embedding_matrix.shape
 
-passage_max_length = 200
-question_max_length = 20
+passage_max_length = 500
+question_max_length = 50
 
 hidden_size = 50
 
@@ -199,7 +199,13 @@ class Squad(Net):
         
         output = tf.concat(0, output)
         
-        loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(output, desired_output[0]))
+        output = tf.Print(output, [output], "output")
+        desired_output = tf.Print(desired_output, [desired_output], "desired_output")
+
+        soft = tf.nn.sparse_softmax_cross_entropy_with_logits(output, desired_output[0])
+        soft = tf.Print(soft, [soft], "soft")
+
+        loss = tf.reduce_mean(soft)
         train_step = tf.train.AdamOptimizer(0.001).minimize(loss)
         
         self.passage = passage
